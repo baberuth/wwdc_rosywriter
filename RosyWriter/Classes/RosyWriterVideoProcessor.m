@@ -390,8 +390,30 @@
 		CVImageBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
 		
 		// Synchronously process the pixel buffer to de-green it.
-		[self processPixelBuffer:pixelBuffer];
+		//[self processPixelBuffer:pixelBuffer];
 		
+        static int count = 0;
+        NSLog(@"Process frame [%d]", count++);
+        if (count < 13) CFRetain(sampleBuffer);
+        
+#ifdef QUESTIONS_WWDC
+        Currently 13 Apple buffers can be retained before the video processing stops.
+        
+        In order to support processing per frame we need to eliminate buffer copies as much as possible. By studying/experimenting with the video API the following questions popped up
+        
+        1) Is it possible to give the Apple API our own pre allocated buffers for dumping the video frames from the camera, so we can create a history of the last X (X approx. 50 buffers) instead of the maximum of 13 buffers. Ultimately we would like to have full buffer control.
+            
+        2) Is it possible to get the RAW video frames without the Alpha channel? All additional processing done by Apple is unwanted and the alpha channel increases the data size by 33%
+            
+        3) Is it possible to provide a special memcpy function which copies the BGRA data from the Apple buffer to main memory and directly splits the R,G,B channel to separate parts of the memory. Once the pixels are loaded in the NEON registers it can be written twice to main memory instead of reading it back again.
+            
+        4) Is it possible to increase the priority level of the capturing process in order to prevent the framedrops due to algorithmic processing? What's currently the best method in the Apple frameworks to capture frames at 30 fps without losing frames. Can we use traditional pthread functions to get deterministic/guaranteed performance?
+            
+        5) Any other tips?
+            
+#endif
+        
+        
 		// Enqueue it for preview.  This is a shallow queue, so if image processing is taking too long,
 		// we'll drop this frame for preview (this keeps preview latency low).
 		OSStatus err = CMBufferQueueEnqueue(previewBufferQueue, sampleBuffer);
@@ -510,14 +532,26 @@
         [captureSession addInput:videoIn];
 	[videoIn release];
     
+    
 	AVCaptureVideoDataOutput *videoOut = [[AVCaptureVideoDataOutput alloc] init];
+    
+    AVCaptureConnection *connection = [videoOut connectionWithMediaType:AVMediaTypeVideo];
+    
+    if (connection.supportsVideoMinFrameDuration) {
+        connection.videoMinFrameDuration = CMTimeMake(1, 30);
+    }
+    if (connection.supportsVideoMaxFrameDuration) {
+        connection.videoMaxFrameDuration = CMTimeMake(1, 30);
+    }
+    
+    
 	/*
 		RosyWriter prefers to discard late video frames early in the capture pipeline, since its
 		processing can take longer than real-time on some platforms (such as iPhone 3GS).
 		Clients whose image processing is faster than real-time should consider setting AVCaptureVideoDataOutput's
 		alwaysDiscardsLateVideoFrames property to NO. 
 	 */
-	[videoOut setAlwaysDiscardsLateVideoFrames:YES];
+	[videoOut setAlwaysDiscardsLateVideoFrames:NO];
 	[videoOut setVideoSettings:[NSDictionary dictionaryWithObject:[NSNumber numberWithInt:kCVPixelFormatType_32BGRA] forKey:(id)kCVPixelBufferPixelFormatTypeKey]];
 	dispatch_queue_t videoCaptureQueue = dispatch_queue_create("Video Capture Queue", DISPATCH_QUEUE_SERIAL);
 	[videoOut setSampleBufferDelegate:self queue:videoCaptureQueue];
